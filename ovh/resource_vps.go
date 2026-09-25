@@ -217,6 +217,20 @@ func (r *vpsResource) Update(ctx context.Context, req resource.UpdateRequest, re
 			return
 		}
 
+		// Record the install options as soon as OVH has accepted them: if the
+		// wait below fails, the next apply must not reinstall the VPS again.
+		accepted := data
+		accepted.ImageId = planData.ImageId
+		accepted.PublicSSHKey = planData.PublicSSHKey
+		accepted.PostInstallScript = planData.PostInstallScript
+		if !planData.DoNotSendPassword.IsUnknown() {
+			accepted.DoNotSendPassword = planData.DoNotSendPassword
+		}
+		resp.Diagnostics.Append(resp.State.Set(ctx, &accepted)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
 		// Wait for reinstallation to complete
 		err := r.waitForVPSReinstall(ctx, data.ServiceName.ValueString())
 		if err != nil {

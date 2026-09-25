@@ -1,6 +1,7 @@
 package ovh
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -173,6 +174,36 @@ func TestVpsModelMergeWithKeepsPlannedInstallOptions(t *testing.T) {
 	}
 }
 
+func TestVpsPostInstallScriptIsASensitiveInstallOption(t *testing.T) {
+	attribute := VpsResourceSchema(context.Background()).Attributes["post_install_script"]
+	if !attribute.IsSensitive() {
+		t.Fatal("post_install_script must be sensitive: first-boot scripts carry credentials")
+	}
+
+	scriptOnly := VpsModel{
+		ImageId:           ovhtypes.NewTfStringNull(),
+		PublicSSHKey:      ovhtypes.NewTfStringNull(),
+		PostInstallScript: ovhtypes.NewTfStringValue("#!/bin/bash\n"),
+	}
+	if !installOptionsHasBeenSet(scriptOnly) {
+		t.Fatal("a post_install_script alone is an install option")
+	}
+	if summary, _ := validateInstallOptions(scriptOnly, VpsModel{}); summary == "" {
+		t.Fatal("a post_install_script without image_id must be rejected")
+	}
+
+	previous := VpsModel{
+		ImageId:           ovhtypes.NewTfStringValue("45b2f222-ab10-44ed-863f-720942762b6f"),
+		PublicSSHKey:      ovhtypes.NewTfStringNull(),
+		PostInstallScript: ovhtypes.NewTfStringValue("#!/bin/bash\n"),
+	}
+	cleared := previous
+	cleared.PostInstallScript = ovhtypes.NewTfStringNull()
+	if _, details := validateInstallOptions(cleared, previous); details != fmt.Sprintf("You cannot set to null a previously non-null value (%s)", "post_install_script") {
+		t.Fatalf("clearing post_install_script: %q", details)
+	}
+}
+
 func TestVpsToInstallOptionsSendsPostInstallScript(t *testing.T) {
 	model := VpsModel{
 		ImageId:           ovhtypes.NewTfStringValue("45b2f222-ab10-44ed-863f-720942762b6f"),
@@ -198,11 +229,13 @@ func TestVpsToInstallOptionsSendsPostInstallScript(t *testing.T) {
 	}
 }
 
-// Adopts an existing VPS (OVH_VPS) and reinstalls it with a first-boot script
-// and no password e-mail. THIS WIPES THE VPS. The last step drops it from
-// state without destroying it: the resource's Delete terminates the service.
+// Adopts an existing VPS and reinstalls it with a first-boot script and no
+// password e-mail. THIS WIPES THE VPS, so it runs only against the one named
+// in OVH_VPS_REINSTALL, never the shared OVH_VPS fixture. The last step drops
+// it from state without destroying it: the resource's Delete terminates the
+// service. Needs Terraform >= 1.7 (removed blocks).
 func TestAccResourceVps_importReinstallPostInstallScript(t *testing.T) {
-	serviceName := os.Getenv("OVH_VPS")
+	serviceName := os.Getenv("OVH_VPS_REINSTALL")
 	imageID := os.Getenv("OVH_VPS_IMAGE_ID")
 	vps := fmt.Sprintf(`
 resource "ovh_vps" "myvps" {
@@ -222,7 +255,11 @@ resource "ovh_vps" "myvps" {
 `, imageID)
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheckVPS(t) },
+		PreCheck: func() {
+			testAccPreCheckCredentials(t)
+			checkEnvOrSkip(t, "OVH_VPS_REINSTALL")
+			checkEnvOrSkip(t, "OVH_VPS_IMAGE_ID")
+		},
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
