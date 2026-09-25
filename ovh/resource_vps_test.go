@@ -1,12 +1,15 @@
 package ovh
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	ovhtypes "github.com/ovh/terraform-provider-ovh/v2/ovh/types"
 )
 
 const testAccVpsBasic = `
@@ -137,6 +140,118 @@ resource "ovh_vps" "myvps" {
   ]
 }
 `
+
+// Update rebuilds its state from GET /vps/{serviceName}, which never returns
+// install options, and merges the plan into it. An install option the merge
+// drops comes back null against a known planned value, which Terraform
+// rejects as an inconsistent result after apply.
+func TestVpsModelMergeWithKeepsPlannedInstallOptions(t *testing.T) {
+	fromAPI := VpsModel{
+		ServiceName:       ovhtypes.NewTfStringValue("vps-test.vps.ovh.net"),
+		ImageId:           ovhtypes.NewTfStringNull(),
+		PublicSSHKey:      ovhtypes.NewTfStringNull(),
+		DoNotSendPassword: ovhtypes.TfBoolValue{BoolValue: basetypes.NewBoolNull()},
+		PostInstallScript: ovhtypes.NewTfStringNull(),
+	}
+	planned := VpsModel{
+		ImageId:           ovhtypes.NewTfStringValue("45b2f222-ab10-44ed-863f-720942762b6f"),
+		PublicSSHKey:      ovhtypes.NewTfStringNull(),
+		DoNotSendPassword: ovhtypes.TfBoolValue{BoolValue: basetypes.NewBoolValue(true)},
+		PostInstallScript: ovhtypes.NewTfStringValue("#!/bin/bash\necho first boot\n"),
+	}
+
+	fromAPI.MergeWith(&planned)
+
+	if !fromAPI.DoNotSendPassword.ValueBool() {
+		t.Fatalf("do_not_send_password = %v, want the planned true", fromAPI.DoNotSendPassword)
+	}
+	if got := fromAPI.PostInstallScript.ValueString(); got != planned.PostInstallScript.ValueString() {
+		t.Fatalf("post_install_script = %q, want the planned script", got)
+	}
+	if got := fromAPI.ImageId.ValueString(); got != planned.ImageId.ValueString() {
+		t.Fatalf("image_id = %q, want the planned image", got)
+	}
+}
+
+func TestVpsToInstallOptionsSendsPostInstallScript(t *testing.T) {
+	model := VpsModel{
+		ImageId:           ovhtypes.NewTfStringValue("45b2f222-ab10-44ed-863f-720942762b6f"),
+		PublicSSHKey:      ovhtypes.NewTfStringNull(),
+		DoNotSendPassword: ovhtypes.TfBoolValue{BoolValue: basetypes.NewBoolValue(true)},
+		PostInstallScript: ovhtypes.NewTfStringValue("#!/bin/bash\necho first boot\n"),
+	}
+
+	body, err := json.Marshal(model.ToInstallOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sent map[string]any
+	if err := json.Unmarshal(body, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent["postInstallScript"] != "#!/bin/bash\necho first boot\n" || sent["doNotSendPassword"] != true || sent["imageId"] != "45b2f222-ab10-44ed-863f-720942762b6f" {
+		t.Fatalf("rebuild body = %s", body)
+	}
+	if !installOptionsHasChanged(model, VpsModel{ImageId: model.ImageId, PublicSSHKey: model.PublicSSHKey, PostInstallScript: ovhtypes.NewTfStringValue("#!/bin/bash\n")}) {
+		t.Fatal("a changed post_install_script must reinstall the VPS")
+	}
+}
+
+// Adopts an existing VPS (OVH_VPS) and reinstalls it with a first-boot script
+// and no password e-mail. THIS WIPES THE VPS. The last step drops it from
+// state without destroying it: the resource's Delete terminates the service.
+func TestAccResourceVps_importReinstallPostInstallScript(t *testing.T) {
+	serviceName := os.Getenv("OVH_VPS")
+	imageID := os.Getenv("OVH_VPS_IMAGE_ID")
+	vps := fmt.Sprintf(`
+resource "ovh_vps" "myvps" {
+  plan = []
+
+  image_id             = "%s"
+  do_not_send_password = true
+  post_install_script  = <<-EOT
+    #!/bin/bash
+    echo terraform-provider-ovh > /root/post-install-ran
+  EOT
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+`, imageID)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheckVPS(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf("import {\n  to = ovh_vps.myvps\n  id = %q\n}\n%s", serviceName, vps),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("ovh_vps.myvps", "service_name", serviceName),
+					resource.TestCheckResourceAttr("ovh_vps.myvps", "image_id", imageID),
+					resource.TestCheckResourceAttr("ovh_vps.myvps", "do_not_send_password", "true"),
+					resource.TestCheckResourceAttrSet("ovh_vps.myvps", "post_install_script"),
+					resource.TestCheckResourceAttr("ovh_vps.myvps", "state", "running"),
+				),
+			},
+			{
+				Config:   vps,
+				PlanOnly: true,
+			},
+			{
+				Config: `
+removed {
+  from = ovh_vps.myvps
+  lifecycle {
+    destroy = false
+  }
+}
+`,
+			},
+		},
+	})
+}
 
 func TestAccResourceVps_basic(t *testing.T) {
 	displayName := acctest.RandomWithPrefix(test_prefix)

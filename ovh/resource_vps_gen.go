@@ -224,6 +224,13 @@ func VpsResourceSchema(ctx context.Context) schema.Schema {
 				),
 			},
 		},
+		"post_install_script": schema.StringAttribute{
+			CustomType:          ovhtypes.TfStringType{},
+			Optional:            true,
+			Sensitive:           true,
+			Description:         "Bash script run once on first boot after the VPS is reinstalled",
+			MarkdownDescription: "Bash script run once on first boot after the VPS is reinstalled",
+		},
 		"public_ssh_key": schema.StringAttribute{
 			CustomType:          ovhtypes.TfStringType{},
 			Optional:            true,
@@ -309,12 +316,14 @@ type VpsModel struct {
 	PublicSSHKey      ovhtypes.TfStringValue `tfsdk:"public_ssh_key" json:"publicSshKey"`
 	ImageId           ovhtypes.TfStringValue `tfsdk:"image_id" json:"imageId"`
 	DoNotSendPassword ovhtypes.TfBoolValue   `tfsdk:"do_not_send_password" json:"doNotSendPassword"`
+	PostInstallScript ovhtypes.TfStringValue `tfsdk:"post_install_script" json:"postInstallScript"`
 }
 
 type InstallOptionsModel struct {
 	PublicSSHKey      ovhtypes.TfStringValue `tfsdk:"public_ssh_key" json:"publicSshKey"`
 	ImageId           ovhtypes.TfStringValue `tfsdk:"image_id" json:"imageId"`
 	DoNotSendPassword ovhtypes.TfBoolValue   `tfsdk:"do_not_send_password" json:"doNotSendPassword"`
+	PostInstallScript ovhtypes.TfStringValue `tfsdk:"post_install_script" json:"postInstallScript"`
 }
 
 func (v *VpsModel) MergeWith(other *VpsModel) {
@@ -374,6 +383,14 @@ func (v *VpsModel) MergeWith(other *VpsModel) {
 		v.PublicSSHKey = other.PublicSSHKey
 	}
 
+	if (v.DoNotSendPassword.IsUnknown() || v.DoNotSendPassword.IsNull()) && !other.DoNotSendPassword.IsUnknown() {
+		v.DoNotSendPassword = other.DoNotSendPassword
+	}
+
+	if (v.PostInstallScript.IsUnknown() || v.PostInstallScript.IsNull()) && !other.PostInstallScript.IsUnknown() {
+		v.PostInstallScript = other.PostInstallScript
+	}
+
 	if (v.ServiceName.IsUnknown() || v.ServiceName.IsNull()) && !other.ServiceName.IsUnknown() {
 		v.ServiceName = other.ServiceName
 	}
@@ -427,6 +444,7 @@ func (v *VpsModel) ToInstallOptions() *InstallOptionsModel {
 		ImageId:           v.ImageId,
 		PublicSSHKey:      v.PublicSSHKey,
 		DoNotSendPassword: v.DoNotSendPassword,
+		PostInstallScript: v.PostInstallScript,
 	}
 }
 
