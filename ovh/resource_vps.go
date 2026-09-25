@@ -269,18 +269,19 @@ func (r *vpsResource) waitForVPSReinstall(ctx context.Context, serviceName strin
 
 func installOptionsHasChanged(planData, data VpsModel) bool {
 	return planData.ImageId.ValueString() != data.ImageId.ValueString() ||
-		planData.PublicSSHKey.ValueString() != data.PublicSSHKey.ValueString()
+		planData.PublicSSHKey.ValueString() != data.PublicSSHKey.ValueString() ||
+		planData.PostInstallScript.ValueString() != data.PostInstallScript.ValueString()
 }
 
 func installOptionsHasBeenSet(data VpsModel) bool {
-	return !data.ImageId.IsNull() || !data.PublicSSHKey.IsNull()
+	return !data.ImageId.IsNull() || !data.PublicSSHKey.IsNull() || !data.PostInstallScript.IsNull()
 }
 
 func validateInstallOptions(planData VpsModel, stateData VpsModel) (string, string) {
 	summary := "Invalid VPS install options"
 	// image_id is mandatory to call /vps/{serviceName}/rebuild
 	if installOptionsHasBeenSet(planData) && planData.ImageId.IsNull() {
-		return summary, "To define a public_ssh_key value, you have to also set a value for image_id"
+		return summary, "To define a public_ssh_key or post_install_script value, you have to also set a value for image_id"
 	}
 
 	detailsNonNull := "You cannot set to null a previously non-null value (%s)"
@@ -291,6 +292,10 @@ func validateInstallOptions(planData VpsModel, stateData VpsModel) (string, stri
 
 	if !stateData.PublicSSHKey.IsNull() && planData.PublicSSHKey.IsNull() {
 		return summary, fmt.Sprintf(detailsNonNull, "public_ssh_key")
+	}
+
+	if !stateData.PostInstallScript.IsNull() && planData.PostInstallScript.IsNull() {
+		return summary, fmt.Sprintf(detailsNonNull, "post_install_script")
 	}
 
 	return "", ""

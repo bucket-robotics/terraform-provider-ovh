@@ -75,6 +75,7 @@ The following arguments are supported:
     * `label` - (Required) Identifier of the resource
     * `value` - (Required) Path to the resource in api.ovh.com
 * `public_ssh_key` - (String) Public SSH key to pre-install on your VPS - if set, then `image_id` must also be set
+* `post_install_script` - (String, Sensitive) Bash script run once on first boot after the VPS is reinstalled - if set, then `image_id` must also be set. Like `image_id` and `public_ssh_key`, a change to it reinstalls the VPS
 * `do_not_send_password` - (Boolean) Indicates if default password should be set and sent by email. Default false: a password is set and an email is sent
 
 ## Attributes Reference
