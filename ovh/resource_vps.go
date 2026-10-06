@@ -76,27 +76,47 @@ func (r *vpsResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
-	// Create order and wait for service to be delivered
-	order := data.ToOrder()
-	if err := orderCreate(order, r.config, "vps", true, defaultOrderTimeout); err != nil {
-		resp.Diagnostics.AddError("failed to create order", err.Error())
+	// Create orders and nothing else. A rebuild that failed here would leave
+	// a paid VPS tainted, and replacing it means terminating it; install
+	// options are applied by Update, on the apply after the order.
+	if installOptionsHasBeenSet(data) {
+		resp.Diagnostics.AddError(
+			"Install options on a VPS being ordered",
+			"Order the VPS with image_id, public_ssh_key and post_install_script unset, then set them: the next apply rebuilds it in place.",
+		)
+		return
 	}
 
-	// Find service name from order
-	orderID := order.Order.OrderId.ValueInt64()
 	plans := []PlanValue{}
 	resp.Diagnostics.Append(data.Plan.ElementsAs(ctx, &plans, false)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	// Create order and wait for service to be delivered. Until the service
+	// name is known nothing is saved: an order refused before payment is
+	// simply retried, and one paid but not delivered, or delivered under a
+	// name we cannot read, is adopted by import (its order ID is in the
+	// error). Saving it with no service name would fail every later Read.
+	order := data.ToOrder()
+	if err := orderCreate(order, r.config, "vps", true, defaultOrderTimeout); err != nil {
+		resp.Diagnostics.AddError("failed to create order", err.Error())
+		return
+	}
+
+	orderID := order.Order.OrderId.ValueInt64()
 	serviceName, err := serviceNameFromOrder(r.config.OVHClient, orderID, plans[0].PlanCode.ValueString())
 	if err != nil {
-		resp.Diagnostics.AddError("failed to retrieve service name", err.Error())
+		resp.Diagnostics.AddError(
+			"failed to retrieve service name",
+			fmt.Sprintf("order %d was paid and delivered but its service name could not be read; import the delivered VPS rather than applying again, which would order another: %s", orderID, err),
+		)
+		return
 	}
 	data.ServiceName = types.TfStringValue{
 		StringValue: basetypes.NewStringValue(serviceName),
 	}
+	data.ID = data.ServiceName
 
 	// Save early data into Terraform state, to make sure a reapply will not reorder a new VPS
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -109,28 +129,6 @@ func (r *vpsResource) Create(ctx context.Context, req resource.CreateRequest, re
 			err.Error(),
 		)
 		return
-	}
-
-	// Update install options if needed
-	if installOptionsHasBeenSet(data) {
-		endpoint := "/vps/" + url.PathEscape(data.ServiceName.ValueString()) + "/rebuild"
-		if err := r.config.OVHClient.Post(endpoint, data.ToInstallOptions(), nil); err != nil {
-			resp.Diagnostics.AddError(
-				fmt.Sprintf("Error calling Post %s", endpoint),
-				err.Error(),
-			)
-			return
-		}
-
-		// Wait for reinstallation to complete
-		err := r.waitForVPSReinstall(ctx, data.ServiceName.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"Error fetching updated resource",
-				err.Error(),
-			)
-			return
-		}
 	}
 
 	// Read updated resource
